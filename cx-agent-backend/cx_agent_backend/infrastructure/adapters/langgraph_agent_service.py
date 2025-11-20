@@ -50,65 +50,66 @@ class LangGraphAgentService(AgentService):
         self._llm_service = llm_service
 
     
+    async def _create_gateway_tool(self):
+        """Create a wrapper tool that manages its own MCP session."""
+        @tool
+        async def tavily_search(query: str) -> str:
+            """Search the web using Tavily API via gateway"""
+            try:
+                # Get gateway URL and credentials
+                gateway_url = parameter_store_reader.get_parameter("/amazon/gateway_url")
+                client_id = parameter_store_reader.get_parameter("/cognito/client_id")
+                client_secret = secret_reader.read_secret("cognito_client_secret")
+                token_url = parameter_store_reader.get_parameter("/cognito/oauth_token_url")
+                
+                if not all([gateway_url, client_id, client_secret, token_url]):
+                    return "Gateway not configured properly"
+                
+                # Get access token
+                token_response = requests.post(
+                    token_url,
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": client_id,
+                        "client_secret": client_secret
+                    },
+                    headers={'Content-Type': 'application/x-www-form-urlencoded'}
+                )
+                
+                if token_response.status_code != 200:
+                    return f"Failed to get access token: {token_response.text}"
+                
+                access_token = token_response.json().get('access_token')
+                if not access_token:
+                    return "No access token received"
+                
+                # Use MCP session for this single call
+                async with streamablehttp_client(gateway_url, headers={"Authorization": f"Bearer {access_token}"}) as (read, write, _):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        
+                        # Call the tool directly via MCP
+                        result = await session.call_tool("tavily-search-target___tavily_search", {"query": query})
+                        logger.info(f"MCP tool result: {result}")
+                        return str(result.content)
+                        
+            except Exception as e:
+                logger.error(f"Gateway tool error: {e}")
+                return f"Web search failed: {str(e)}"
+        
+        return tavily_search
+    
     async def _get_gateway_tools(self, user_jwt_token: str = None):
-        """Get gateway tools using MCP Client with caching."""
+        """Get gateway tools using wrapper approach."""
         if not GATEWAY_AVAILABLE:
             logger.warning("Gateway not available")
             return []
         
-
-            
         try:
-            # Get gateway URL from parameter store
-            gateway_url = parameter_store_reader.get_parameter("/amazon/gateway_url")
-            if not gateway_url:
-                logger.warning("Gateway URL not available, skipping gateway tools")
-                return []
-            
-            # Get client credentials for token
-            client_id = parameter_store_reader.get_parameter("/cognito/client_id")
-            client_secret = secret_reader.read_secret("cognito_client_secret")
-            token_url = parameter_store_reader.get_parameter("/cognito/oauth_token_url")
-            
-            if not all([client_id, client_secret, token_url]):
-                logger.warning("Missing Cognito credentials, skipping gateway tools")
-                return []
-            
-            # Fetch access token
-            token_response = requests.post(
-                token_url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": client_id,
-                    "client_secret": client_secret
-                },
-                headers={'Content-Type': 'application/x-www-form-urlencoded'}
-            )
-            
-            if token_response.status_code != 200:
-                logger.warning(f"Failed to get access token: {token_response.text}")
-                return []
-            
-            access_token = token_response.json().get('access_token')
-            if not access_token:
-                logger.warning("No access token received")
-                return []
-            
-            # Use async context manager to get tools
-            async with streamablehttp_client(gateway_url, headers={"Authorization": f"Bearer {access_token}"}) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    mcp_tools = await load_mcp_tools(session)
-                    logger.info(f"Retrieved {len(mcp_tools)} gateway tools")
-                    
-                    # Log tool details for debugging
-                    for tool in mcp_tools:
-                        logger.info(f"Gateway tool: {tool.name} - {tool.description}")
-                    
-                    return mcp_tools
-            
+            gateway_tool = await self._create_gateway_tool()
+            return [gateway_tool]
         except Exception as e:
-            logger.warning(f"Failed to get gateway tools: {e}")
+            logger.warning(f"Failed to create gateway tools: {e}")
             return []
     
 
@@ -166,9 +167,19 @@ class LangGraphAgentService(AgentService):
         # Get gateway tools for this request using user's JWT token
         gateway_tools = await self._get_gateway_tools(user_jwt_token)
         
+        # Log gateway tools for debugging
+        logger.info(f"=== GATEWAY TOOLS DEBUG ===")
+        for gateway_tool in gateway_tools:
+            logger.info(f"Tool name: {gateway_tool.name}")
+            logger.info(f"Tool description: {gateway_tool.description}")
+            logger.info(f"Tool args_schema: {gateway_tool.args_schema}")
+            if hasattr(gateway_tool, 'func'):
+                logger.info(f"Tool func: {gateway_tool.func}")
+        logger.info(f"=== END GATEWAY TOOLS DEBUG ===")
+        
         # Combine existing tools with memory tools and gateway tools
-        # all_tools = tools + memory_tools + gateway_tools
-        all_tools = gateway_tools
+        all_tools = tools + memory_tools + gateway_tools
+        # all_tools = gateway_tools
         
         return create_react_agent(llm, tools=all_tools, prompt=system_message), memory_client
 
@@ -277,11 +288,21 @@ class LangGraphAgentService(AgentService):
             if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls"):
                 if msg.tool_calls:
                     for tool_call in msg.tool_calls:
+                        logger.info(f"=== TOOL CALL DEBUG ===")
+                        logger.info(f"Tool call name: {tool_call.get('name')}")
+                        logger.info(f"Tool call args: {tool_call.get('args')}")
+                        logger.info(f"Full tool call: {tool_call}")
+                        logger.info(f"=== END TOOL CALL DEBUG ===")
                         tools_used.append(tool_call["name"])
             
             # Extract citations from ToolMessage responses
             from langchain_core.messages import ToolMessage
             if isinstance(msg, ToolMessage):
+                logger.info(f"=== TOOL RESPONSE DEBUG ===")
+                logger.info(f"Tool message name: {getattr(msg, 'name', 'Unknown')}")
+                logger.info(f"Tool message content: {msg.content}")
+                logger.info(f"Tool message type: {type(msg.content)}")
+                logger.info(f"=== END TOOL RESPONSE DEBUG ===")
                 try:
                     # Parse tool response content
                     if isinstance(msg.content, str):

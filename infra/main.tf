@@ -200,85 +200,8 @@ resource "aws_lambda_permission" "allow_gateway" {
 data "archive_file" "tavily_lambda_zip" {
   type        = "zip"
   output_path = "tavily_lambda.zip"
-  source {
-    content = <<EOF
-import json
-import os
-import urllib.request
-import urllib.parse
-
-def handler(event, context):
-    print(f"Lambda invoked with event: {json.dumps(event)}")
-    print(f"Context: {context}")
-    
-    api_key = os.environ.get('TAVILY_API_KEY')
-    print(f"API key present: {bool(api_key)}")
-    
-    if not api_key:
-        print("ERROR: TAVILY_API_KEY not found in environment")
-        return {'error': 'TAVILY_API_KEY not configured'}
-    
-    # Handle both string input and object input
-    if isinstance(event, str):
-        query = event
-    else:
-        query = event.get('query', event) if isinstance(event, dict) else str(event)
-    
-    print(f"Extracted query: {query}")
-    
-    if not query:
-        print("ERROR: No query provided")
-        return {'error': 'Query parameter is required'}
-    
-    url = 'https://api.tavily.com/search'
-    data = {
-        'api_key': api_key,
-        'query': query,
-        'search_depth': 'basic',
-        'include_answer': True
-    }
-    
-    print(f"Making request to Tavily API with query: {query}")
-    
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(data).encode('utf-8'),
-        headers={'Content-Type': 'application/json'}
-    )
-    
-    try:
-        with urllib.request.urlopen(req) as response:
-            print(f"Tavily API response status: {response.status}")
-            result = json.loads(response.read().decode('utf-8'))
-            print(f"Tavily API response: {json.dumps(result)[:500]}...")
-            
-            # Format response for agent understanding
-            if 'results' in result:
-                formatted_results = []
-                for item in result['results'][:3]:  # Limit to top 3 results
-                    formatted_results.append({
-                        'title': item.get('title', ''),
-                        'url': item.get('url', ''),
-                        'content': item.get('content', '')[:500]  # Truncate content
-                    })
-                formatted_response = {
-                    'search_results': formatted_results,
-                    'answer': result.get('answer', ''),
-                    'query': query
-                }
-                print(f"Returning formatted response: {json.dumps(formatted_response)[:200]}...")
-                return formatted_response
-            
-            print(f"Returning raw result: {json.dumps(result)[:200]}...")
-            return result
-    except Exception as e:
-        print(f"ERROR in Lambda function: {str(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        return {'error': str(e)}
-EOF
-    filename = "index.py"
-  }
+  source_file = "lambda/tavily_search.py"
+  output_file_mode = "0666"
 }
 
 # Gateway Target for Tavily
@@ -302,8 +225,8 @@ resource "aws_bedrockagentcore_gateway_target" "tavily_target" {
             description = "Search the web using Tavily API"
 
             input_schema {
-              type        = "string"
-              description = "Search query for web search"
+              type        = "object"
+              description = "Search query object"
             }
           }
         }
