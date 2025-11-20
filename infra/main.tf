@@ -155,6 +155,7 @@ resource "aws_lambda_function" "tavily_search" {
   role            = aws_iam_role.lambda_role.arn
   handler         = "index.handler"
   runtime         = "python3.9"
+  timeout         = 30
 
   environment {
     variables = {
