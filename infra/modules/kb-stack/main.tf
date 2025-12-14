@@ -3,6 +3,23 @@ resource "aws_s3_bucket" "kb_bucket" {
   bucket_prefix = var.name
 }
 
+resource "aws_s3_bucket_versioning" "kb_bucket_versioning" {
+  bucket = aws_s3_bucket.kb_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "kb_bucket_encryption" {
+  bucket = aws_s3_bucket.kb_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
 resource "aws_s3_bucket_public_access_block" "kb_bucket_pab" {
   bucket = aws_s3_bucket.kb_bucket.id
 
@@ -15,6 +32,23 @@ resource "aws_s3_bucket_public_access_block" "kb_bucket_pab" {
 # Access logging bucket
 resource "aws_s3_bucket" "access_logs" {
   bucket_prefix = "${var.name}-access-logs"
+}
+
+resource "aws_s3_bucket_versioning" "access_logs_versioning" {
+  bucket = aws_s3_bucket.access_logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "access_logs_encryption" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "access_logs_pab" {

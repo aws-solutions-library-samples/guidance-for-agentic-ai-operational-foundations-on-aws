@@ -16,6 +16,11 @@ RUN uv sync --no-dev --no-install-local
 COPY cx_agent_backend ./cx_agent_backend
 RUN uv sync --no-dev
 
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN chown -R appuser:appuser /app
+USER appuser
+
 # Expose FastAPI server port
 EXPOSE 8080
 
