@@ -1,14 +1,22 @@
 """LangGraph implementation of agent service."""
 
+import base64
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 import os
 import logging
+import json
 from langgraph.prebuilt import create_react_agent
-from langfuse import get_client, Langfuse
-from langfuse.langchain import CallbackHandler
 from bedrock_agentcore.memory import MemoryClient
+try:
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+    from langchain_mcp_adapters.tools import load_mcp_tools
+    import requests
+    GATEWAY_AVAILABLE = True
+except ImportError:
+    GATEWAY_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +31,11 @@ from cx_agent_backend.domain.services.guardrail_service import GuardrailAssessme
 from cx_agent_backend.domain.services.llm_service import LLMService
 from cx_agent_backend.infrastructure.adapters.tools import tools
 from cx_agent_backend.infrastructure.aws.parameter_store_reader import AWSParameterStoreReader
+from cx_agent_backend.infrastructure.aws.secret_reader import AWSSecretsReader
 
 
 parameter_store_reader = AWSParameterStoreReader()
+secret_reader = AWSSecretsReader()
 
 
 class LangGraphAgentService(AgentService):
@@ -33,28 +43,86 @@ class LangGraphAgentService(AgentService):
 
     def __init__(
         self,
-        langfuse_config: dict | None = None,
         guardrail_service: GuardrailService | None = None,
         llm_service: LLMService | None = None,
     ):
-        self._langfuse_config = langfuse_config or {}
         self._guardrail_service = guardrail_service
         self._llm_service = llm_service
 
-    def _create_agent(self, agent_type: AgentType, model: str, memory_id: str = None, actor_id: str = None, session_id: str = None) -> any:
+    
+    async def _create_gateway_tool(self):
+        """Create a wrapper tool that manages its own MCP session."""
+        @tool
+        async def tavily_search(query: str) -> str:
+            """Search the web using Tavily API via gateway"""
+            try:
+                # Get gateway URL and credentials
+                gateway_url = parameter_store_reader.get_parameter("/amazon/gateway_url")
+                client_id = parameter_store_reader.get_parameter("/cognito/client_id")
+                client_secret = secret_reader.read_secret("cognito_client_secret")
+                token_url = parameter_store_reader.get_parameter("/cognito/oauth_token_url")
+                
+                if not all([gateway_url, client_id, client_secret, token_url]):
+                    return "Gateway not configured properly"
+                
+                # Get access token
+                token_response = requests.post(
+                    token_url,
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": client_id,
+                        "client_secret": client_secret
+                    },
+                    headers={'Content-Type': 'application/x-www-form-urlencoded'}
+                )
+                
+                if token_response.status_code != 200:
+                    return f"Failed to get access token: {token_response.text}"
+                
+                access_token = token_response.json().get('access_token')
+                if not access_token:
+                    return "No access token received"
+                
+                # Use MCP session for this single call
+                async with streamablehttp_client(gateway_url, headers={"Authorization": f"Bearer {access_token}"}) as (read, write, _):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        
+                        # Call the tool directly via MCP
+                        result = await session.call_tool("tavily-search-target___tavily_search", {"query": query})
+                        logger.info(f"MCP tool result: {result}")
+                        return str(result.content)
+                        
+            except Exception as e:
+                logger.error(f"Gateway tool error: {e}")
+                return f"Web search failed: {str(e)}"
+        
+        return tavily_search
+    
+    async def _get_gateway_tools(self, user_jwt_token: str = None):
+        """Get gateway tools using wrapper approach."""
+        if not GATEWAY_AVAILABLE:
+            logger.warning("Gateway not available")
+            return []
+        
+        try:
+            gateway_tool = await self._create_gateway_tool()
+            return [gateway_tool]
+        except Exception as e:
+            logger.warning(f"Failed to create gateway tools: {e}")
+            return []
+    
+
+
+    async def _create_agent(self, agent_type: AgentType, model: str, memory_id: str = None, actor_id: str = None, session_id: str = None, user_jwt_token: str = None) -> any:
         """Create agent with specific model."""
-        from langchain_openai import ChatOpenAI
+        from langchain_aws import ChatBedrock
         
-        # Remove vendor prefix if present (format: vendor/model)
-        processed_model = model.split("/", 1)[-1] if "/" in model else model
-        
-        # Create LLM with the specified model
-        llm = ChatOpenAI(
-            api_key=self._llm_service.api_key,
-            base_url=self._llm_service.base_url,
-            model=processed_model,
-            temperature=0.7,
-            streaming=True,
+        # Use ChatBedrock directly
+        llm = ChatBedrock(
+            model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+            region_name=os.getenv('AWS_REGION', 'us-east-1'),
+            temperature=0.7
         )
         
         # Add memory tool if memory parameters provided
@@ -81,21 +149,37 @@ class LangGraphAgentService(AgentService):
 
         system_message = (
             "You are a professional customer service agent for AnyCompany. Your goal is to provide accurate, helpful responses while following company protocols.\n\n"
-            "TOOL USAGE PRIORITY:\n"
-            "1. ALWAYS start with retrieve_context to search our knowledge base for company information\n"
-            "2. If knowledge base lacks sufficient details, supplement with web_search\n"
-            "3. For ticket requests, use create_support_ticket with complete details\n"
-            "4. Use get_support_tickets to check existing ticket status\n\n"
+            "TOOL USAGE STRATEGY:\n"
+            "1. For COMPANY-RELATED queries (products, services, policies, procedures, support): Use retrieve_context to search our knowledge base\n"
+            "2. For GENERIC queries (general information, current events, how-to guides): Use tavily_search via gateway\n"
+            "3. If retrieve_context returns no results or insufficient information, fallback to tavily_search\n"
+            "4. For ticket requests: Use create_support_ticket with complete details\n"
+            "5. For ticket status: Use get_support_tickets\n\n"
+            "DO NOT use both retrieve_context and tavily_search for the same query - choose the most appropriate tool based on the query type.\n\n"
             "RESPONSE GUIDELINES:\n"
             "- Be concise but thorough in explanations\n"
             "- Always cite sources when using knowledge base or web information\n"
             "- For ticket creation, gather: subject, description, priority, and contact info\n"
-            "- If you cannot find information, clearly state limitations and offer alternatives\n"
+            "- If knowledge base has no relevant information, clearly state this and use web search\n"
             "- Maintain a professional, empathetic tone throughout interactions"
         )
 
-        # Combine existing tools with memory tools
-        all_tools = tools + memory_tools
+        # Get gateway tools for this request using user's JWT token
+        gateway_tools = await self._get_gateway_tools(user_jwt_token)
+        
+        # Log gateway tools for debugging
+        logger.info(f"=== GATEWAY TOOLS DEBUG ===")
+        for gateway_tool in gateway_tools:
+            logger.info(f"Tool name: {gateway_tool.name}")
+            logger.info(f"Tool description: {gateway_tool.description}")
+            logger.info(f"Tool args_schema: {gateway_tool.args_schema}")
+            if hasattr(gateway_tool, 'func'):
+                logger.info(f"Tool func: {gateway_tool.func}")
+        logger.info(f"=== END GATEWAY TOOLS DEBUG ===")
+        
+        # Combine existing tools with memory tools and gateway tools
+        all_tools = tools + memory_tools + gateway_tools
+        # all_tools = gateway_tools
         
         return create_react_agent(llm, tools=all_tools, prompt=system_message), memory_client
 
@@ -108,13 +192,7 @@ class LangGraphAgentService(AgentService):
             request.agent_type,
         )
         
-        # Use trace_id from request if provided, otherwise create one
-        langfuse = None
-        predefined_trace_id = getattr(request, 'trace_id', None)
-        if self._langfuse_config.get("enabled"):
-            langfuse = get_client()
-            if not predefined_trace_id:
-                predefined_trace_id = Langfuse.create_trace_id(seed=request.session_id)
+
         
         # Check input guardrails if enabled
         if self._guardrail_service and request.messages:
@@ -138,7 +216,7 @@ class LangGraphAgentService(AgentService):
                                 input_result.blocked_categories
                             )
                         },
-                        trace_id=predefined_trace_id,
+                        trace_id=None,
                     )
 
         # Get memory parameters from environment or request
@@ -150,7 +228,10 @@ class LangGraphAgentService(AgentService):
         actor_id = request.user_id
         session_id = request.session_id
         
-        agent, memory_client = self._create_agent(request.agent_type, request.model, stm_memory_id, actor_id, session_id)
+        # Extract user JWT token from request
+        user_jwt_token = request.jwt_token
+        
+        agent, memory_client = await self._create_agent(request.agent_type, request.model, stm_memory_id, actor_id, session_id, user_jwt_token)
 
         # Convert domain messages to LangChain format
         lc_messages = []
@@ -160,94 +241,38 @@ class LangGraphAgentService(AgentService):
             elif msg.role == MessageRole.ASSISTANT:
                 lc_messages.append(AIMessage(content=msg.content))
 
-        # Create config with Langfuse callback if enabled
-        trace_id = None
-        response = None
 
-        if self._langfuse_config.get("enabled"):
-            os.environ["LANGFUSE_SECRET_KEY"] = self._langfuse_config.get("secret_key")
-            os.environ["LANGFUSE_PUBLIC_KEY"] = self._langfuse_config.get("public_key")
-            os.environ["LANGFUSE_HOST"] = self._langfuse_config.get("host")
-            
-            trace_id = predefined_trace_id
-            
-            langfuse_handler = CallbackHandler()
-            
-            with langfuse.start_as_current_span(
-                name="langchain-request",
-                trace_context={"trace_id": predefined_trace_id}
-            ) as span:
-                trace_update_params = {
-                    "user_id": request.user_id,
-                    "input": {"messages": [msg.content for msg in request.messages]}
-                }
-                # Add default tag and any additional tags
-                tags = ["langgraph-cx-agent"]
-                if request.langfuse_tags:
-                    logger.info(f"Adding langfuse_tags: {request.langfuse_tags}")
-                    tags.extend(request.langfuse_tags)
-                else:
-                    logger.info("No langfuse_tags provided")
-                logger.info(f"Final tags for trace: {tags}")
-                trace_update_params["tags"] = tags
-                span.update_trace(**trace_update_params)
+
+        # Create config
+        config = RunnableConfig(
+            configurable={
+                "thread_id": f"{request.session_id}",
+                "user_id": request.user_id,
+            },
+        )
+        
+        # Invoke agent with recursion limit
+        logger.debug("Invoking agent with %s messages", len(lc_messages))
+        response = await agent.ainvoke(
+            {"messages": lc_messages}, 
+            config
+        )
+        
+        # Save conversation to memory if available
+        if memory_client and lc_messages:
+            try:
+                last_user_msg = next((msg.content for msg in reversed(lc_messages) if isinstance(msg, HumanMessage)), None)
+                assistant_response = response["messages"][-1].content if response["messages"] else ""
                 
-                config = RunnableConfig(
-                    configurable={
-                        "thread_id": f"{request.session_id}",
-                        "user_id": request.user_id,
-                    },
-                    callbacks=[langfuse_handler],
-                )
-                
-                # Invoke agent
-                logger.debug("Invoking agent with %s messages", len(lc_messages))
-                response = await agent.ainvoke({"messages": lc_messages}, config=config)
-                
-                # Save conversation to memory if available
-                if memory_client and lc_messages:
-                    try:
-                        last_user_msg = next((msg.content for msg in reversed(lc_messages) if isinstance(msg, HumanMessage)), None)
-                        assistant_response = response["messages"][-1].content if response["messages"] else ""
-                        
-                        if last_user_msg and assistant_response:
-                            memory_client.create_event(
-                                memory_id=stm_memory_id,
-                                actor_id=actor_id,
-                                session_id=session_id,
-                                messages=[(last_user_msg, "USER"), (assistant_response, "ASSISTANT")]
-                            )
-                    except Exception as e:
-                        logger.warning(f"Failed to save conversation to memory: {e}")
-                
-                span.update_trace(output={"response": response["messages"][-1].content if response["messages"] else ""})
-        else:
-            config = RunnableConfig(
-                configurable={
-                    "thread_id": f"{request.session_id}",
-                    "user_id": request.user_id,
-                },
-            )
-            
-            # Invoke agent
-            logger.debug("Invoking agent with %s messages", len(lc_messages))
-            response = await agent.ainvoke({"messages": lc_messages}, config=config)
-            
-            # Save conversation to memory if available
-            if memory_client and lc_messages:
-                try:
-                    last_user_msg = next((msg.content for msg in reversed(lc_messages) if isinstance(msg, HumanMessage)), None)
-                    assistant_response = response["messages"][-1].content if response["messages"] else ""
-                    
-                    if last_user_msg and assistant_response:
-                        memory_client.create_event(
-                            memory_id=stm_memory_id,
-                            actor_id=actor_id,
-                            session_id=session_id,
-                            messages=[(last_user_msg, "USER"), (assistant_response, "ASSISTANT")]
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to save conversation to memory: {e}")
+                if last_user_msg and assistant_response:
+                    memory_client.create_event(
+                        memory_id=stm_memory_id,
+                        actor_id=actor_id,
+                        session_id=session_id,
+                        messages=[(last_user_msg, "USER"), (assistant_response, "ASSISTANT")]
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to save conversation to memory: {e}")
         # Extract response
         last_message = response["messages"][-1]
         tools_used = []
@@ -263,11 +288,21 @@ class LangGraphAgentService(AgentService):
             if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls"):
                 if msg.tool_calls:
                     for tool_call in msg.tool_calls:
+                        logger.info(f"=== TOOL CALL DEBUG ===")
+                        logger.info(f"Tool call name: {tool_call.get('name')}")
+                        logger.info(f"Tool call args: {tool_call.get('args')}")
+                        logger.info(f"Full tool call: {tool_call}")
+                        logger.info(f"=== END TOOL CALL DEBUG ===")
                         tools_used.append(tool_call["name"])
             
             # Extract citations from ToolMessage responses
             from langchain_core.messages import ToolMessage
             if isinstance(msg, ToolMessage):
+                logger.info(f"=== TOOL RESPONSE DEBUG ===")
+                logger.info(f"Tool message name: {getattr(msg, 'name', 'Unknown')}")
+                logger.info(f"Tool message content: {msg.content}")
+                logger.info(f"Tool message type: {type(msg.content)}")
+                logger.info(f"=== END TOOL RESPONSE DEBUG ===")
                 try:
                     # Parse tool response content
                     if isinstance(msg.content, str):
@@ -294,7 +329,7 @@ class LangGraphAgentService(AgentService):
                     metadata={
                         "blocked_categories": ",".join(output_result.blocked_categories)
                     },
-                    trace_id=trace_id,
+                    trace_id=None,
                 )
 
         # Add trace metadata
@@ -313,7 +348,7 @@ class LangGraphAgentService(AgentService):
             agent_type=request.agent_type,
             tools_used=tools_used,
             metadata=metadata,
-            trace_id=trace_id
+            trace_id=None
         )
 
     async def stream_response(self, request: AgentRequest):

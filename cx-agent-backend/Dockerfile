@@ -16,8 +16,17 @@ RUN uv sync --no-dev --no-install-local
 COPY cx_agent_backend ./cx_agent_backend
 RUN uv sync --no-dev
 
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN chown -R appuser:appuser /app
+USER appuser
+
 # Expose FastAPI server port
 EXPOSE 8080
 
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+
 # Start the CX Agent service
-CMD ["opentelemetry-instrument", "python", "-m", "cx_agent_backend"]
+CMD ["python", "-m", "cx_agent_backend"]

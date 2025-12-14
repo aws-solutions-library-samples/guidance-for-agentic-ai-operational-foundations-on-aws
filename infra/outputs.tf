@@ -37,3 +37,29 @@ output "s3_bucket_name" {
   description = "Name of the S3 bucket for knowledge base"
   value       = module.kb_stack.s3_bucket_name
 }
+
+output "gateway_url" {
+  description = "URL of the AgentCore Gateway"
+  value       = aws_bedrockagentcore_gateway.cx_gateway.gateway_url
+}
+
+output "gateway_id" {
+  description = "ID of the AgentCore Gateway"
+  value       = aws_bedrockagentcore_gateway.cx_gateway.gateway_id
+}
+
+output "oauth_token_url" {
+  description = "OAuth token endpoint URL for Cognito"
+  value       = module.cognito.oauth_token_url
+}
+
+output "client_secret" {
+  description = "Cognito client secret"
+  value       = module.cognito.client_secret
+  sensitive   = true
+}
+
+output "user_pool_client_id" {
+  description = "Cognito user pool client ID"
+  value       = module.cognito.user_pool_client_id
+}

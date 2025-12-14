@@ -26,6 +26,7 @@ class AgentRequest:
     session_id: str | None = None
     trace_id: str | None = None
     langfuse_tags: list[str] = field(default_factory=list)
+    jwt_token: str | None = None
 
 
 @dataclass(frozen=True)

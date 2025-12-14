@@ -1,10 +1,7 @@
 """Domain service for conversation business logic."""
 
 import logging
-import os
 from uuid import UUID
-
-from langfuse import get_client, Langfuse
 
 from cx_agent_backend.domain.entities.conversation import Conversation, Message
 from cx_agent_backend.domain.repositories.conversation_repository import ConversationRepository
@@ -21,12 +18,10 @@ class ConversationService:
         conversation_repo: ConversationRepository,
         agent_service: AgentService,
         guardrail_service: GuardrailService | None = None,
-        langfuse_config: dict | None = None,
     ):
         self._conversation_repo = conversation_repo
         self._agent_service = agent_service
         self._guardrail_service = guardrail_service
-        self._langfuse_config = langfuse_config or {}
 
     async def start_conversation(self, user_id: str) -> Conversation:
         """Start a new conversation."""
@@ -35,7 +30,7 @@ class ConversationService:
         return conversation
 
     async def send_message(
-        self, conversation_id: UUID, user_id: str, content: str, model: str, langfuse_tags: list[str] = None
+        self, conversation_id: UUID, user_id: str, content: str, model: str, langfuse_tags: list[str] = None, jwt_token: str = None
     ) -> tuple[Message, list[str]]:
         """Send a message and get AI response."""
         # Get or create conversation
@@ -75,6 +70,7 @@ class ConversationService:
             session_id=str(conversation.id),
             trace_id=None,  # Can be set from FastAPI layer
             langfuse_tags=langfuse_tags or [],
+            jwt_token=jwt_token,
         )
         agent_response = await self._agent_service.process_request(agent_request)
         
@@ -130,41 +126,5 @@ class ConversationService:
         return await self._conversation_repo.get_by_user_id(user_id)
 
     async def log_feedback(self, user_id: str, session_id: str, message_id: str, score: int, comment: str = "") -> None:
-        """Log user feedback to Langfuse."""
-        
-        # Log feedback attempt
-        feedback_msg = f"[FEEDBACK] Attempting to log feedback - user_id: {user_id}, session_id: {session_id}, message_id: {message_id}, score: {score}"
-        logger.info(feedback_msg)
-        
-        try:
-            
-            logger.info("[FEEDBACK] Langfuse config - enabled: %s, host: %s", 
-                       self._langfuse_config.get("enabled"), 
-                       self._langfuse_config.get("host"))
-            
-            if self._langfuse_config.get("enabled"):
-                logger.info("[FEEDBACK] Langfuse is enabled, setting environment variables")
-                os.environ["LANGFUSE_SECRET_KEY"] = self._langfuse_config.get("secret_key")
-                os.environ["LANGFUSE_PUBLIC_KEY"] = self._langfuse_config.get("public_key")
-                os.environ["LANGFUSE_HOST"] = self._langfuse_config.get("host")
-                
-                langfuse = get_client()
-                predefined_trace_id = Langfuse.create_trace_id(seed=session_id)
-                
-                logger.info("[FEEDBACK] Calling span.score_trace")
-                with langfuse.start_as_current_span(
-                    name="langchain-request",
-                    trace_context={"trace_id": predefined_trace_id}
-                ) as span:
-                    result = span.score_trace(
-                        name="user-feedback",
-                        value=score,
-                        data_type="NUMERIC",
-                        comment=comment
-                    )
-                
-                logger.info("[FEEDBACK] Successfully created score: %s", result)
-            else:
-                logger.info("[FEEDBACK] Langfuse is not enabled in config")
-        except Exception as e:
-            logger.error(f"[FEEDBACK] Failed to log feedback to Langfuse: {e}")
+        """Log user feedback."""
+        logger.info(f"[FEEDBACK] Received feedback - user_id: {user_id}, session_id: {session_id}, message_id: {message_id}, score: {score}, comment: {comment}")

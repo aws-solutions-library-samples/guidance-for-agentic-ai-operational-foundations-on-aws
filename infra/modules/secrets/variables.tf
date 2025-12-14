@@ -52,3 +52,8 @@ variable "tavily_api_key" {
   type        = string
   sensitive   = true
 }
+variable "kms_key_id" {
+  description = "KMS key ID for encrypting secrets"
+  type        = string
+  default     = null
+}

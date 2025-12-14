@@ -31,9 +31,9 @@ def render_agentcore_config():
             # Region
             region = st.selectbox(
                 "AWS Region",
-                ["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1"],
+                ["us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1"],
                 index=0 if st.session_state.get("region", "us-east-1") == "us-east-1" else 
-                      ["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1"].index(st.session_state.get("region", "us-east-1"))
+                      ["us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1"].index(st.session_state.get("region", "us-east-1"))
             )
             st.session_state.region = region
             

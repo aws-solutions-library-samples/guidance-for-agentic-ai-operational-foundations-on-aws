@@ -34,6 +34,7 @@ def _get_kb_retriever():
         retriever = AmazonKnowledgeBasesRetriever(
             knowledge_base_id=kb_id,
             aws_session=session,
+            region_name=settings.aws_region,
             retrieval_config={
                 "vectorSearchConfiguration": {
                     "numberOfResults": 3,
@@ -323,7 +324,7 @@ def web_search(query: str) -> str:
 
 # Available tools
 tools = [
-    web_search,
+    # web_search,  # Commented out - using gateway integration instead
     retrieve_context,
     create_support_ticket,
     get_support_tickets,

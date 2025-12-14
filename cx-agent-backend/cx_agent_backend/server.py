@@ -68,6 +68,7 @@ def create_app() -> FastAPI:
         conversation_id_str = input_data.get("conversation_id")
         user_id = input_data.get("user_id")
         langfuse_tags = input_data.get("langfuse_tags", [])
+        jwt_token = input_data.get("jwt_token")  # Extract JWT token from input
         
         # Convert conversation_id to UUID
         try:
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
                 content=prompt,
                 model=settings.default_model,
                 langfuse_tags=langfuse_tags,
+                jwt_token=jwt_token,
             )
             
             # Return agent contract format with metadata

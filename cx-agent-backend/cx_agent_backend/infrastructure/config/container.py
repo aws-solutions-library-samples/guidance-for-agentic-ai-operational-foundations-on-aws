@@ -24,7 +24,6 @@ class Container(containers.DeclarativeContainer):
     parameter_store_reader = AWSParameterStoreReader()
 
     gateway_secret = json.loads(secret_reader.read_secret("gateway_credentials"))
-    langfuse_secret = json.loads(secret_reader.read_secret("langfuse_credentials"))
 
     # Repositories
     conversation_repository = providers.Singleton(MemoryConversationRepository)
@@ -49,12 +48,6 @@ class Container(containers.DeclarativeContainer):
 
     agent_service = providers.Singleton(
         LangGraphAgentService,
-        langfuse_config={
-            "enabled": settings.langfuse_enabled,
-            "secret_key": langfuse_secret["langfuse_secret_key"],
-            "public_key": langfuse_secret["langfuse_public_key"],
-            "host": langfuse_secret["langfuse_host"],
-        },
         guardrail_service=guardrail_service,
         llm_service=llm_service,
     )
@@ -64,10 +57,4 @@ class Container(containers.DeclarativeContainer):
         conversation_repo=conversation_repository,
         agent_service=agent_service,
         guardrail_service=guardrail_service,
-        langfuse_config={
-            "enabled": settings.langfuse_enabled,
-            "secret_key": langfuse_secret["langfuse_secret_key"],
-            "public_key": langfuse_secret["langfuse_public_key"],
-            "host": langfuse_secret["langfuse_host"],
-        },
     )

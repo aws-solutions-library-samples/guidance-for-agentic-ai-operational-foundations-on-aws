@@ -33,7 +33,8 @@ class AgentCoreClient:
             payload = {
                 "input": {
                     "prompt": message,
-                    "conversation_id": conversation_id
+                    "conversation_id": conversation_id,
+                    "jwt_token": self.auth_token
                 }
             }
             

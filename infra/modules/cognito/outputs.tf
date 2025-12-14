@@ -27,3 +27,13 @@ output "client_secret" {
   value       = aws_cognito_user_pool_client.user_pool_client.client_secret
   sensitive   = true
 }
+
+output "domain" {
+  description = "Cognito User Pool Domain"
+  value       = aws_cognito_user_pool_domain.user_pool_domain.domain
+}
+
+output "oauth_token_url" {
+  description = "OAuth token endpoint URL"
+  value       = "https://${aws_cognito_user_pool_domain.user_pool_domain.domain}.auth.${data.aws_region.current.name}.amazoncognito.com/oauth2/token"
+}

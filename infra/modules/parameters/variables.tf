@@ -22,3 +22,13 @@ variable "client_id" {
   description = "Cognito Client ID"
   type        = string
 }
+
+variable "gateway_url" {
+  description = "Gateway URL for MCP connection"
+  type        = string
+}
+
+variable "oauth_token_url" {
+  description = "OAuth token URL for Cognito client credentials"
+  type        = string
+}
