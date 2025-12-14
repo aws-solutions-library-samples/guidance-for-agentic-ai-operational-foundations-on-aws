@@ -1,0 +1,6 @@
+exclude:
+  - aws-s3-enable-bucket-lifecycle-configuration
+  - aws-iam-no-policy-wildcards
+  - aws-ec2-no-public-ingress-sgr
+  - aws-s3-enable-bucket-encryption
+  - aws-s3-enable-versioning

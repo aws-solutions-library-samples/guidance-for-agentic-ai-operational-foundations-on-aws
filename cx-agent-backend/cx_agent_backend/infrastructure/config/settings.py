@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     api_description: str = "Clean Architecture CX Agent"
 
     # Server Settings
-    host: str = Field(default="0.0.0.0", description="Server host")
+    host: str = Field(default="0.0.0.0", description="Server host")  # nosec B104
     port: int = Field(default=8080, description="Server port")
     debug: bool = Field(default=False, description="Debug mode")
 

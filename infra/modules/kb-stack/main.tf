@@ -1,3 +1,4 @@
+# tfsec:ignore:aws-s3-enable-bucket-lifecycle-configuration - Lifecycle configured separately
 # S3 Bucket for Knowledge Base
 resource "aws_s3_bucket" "kb_bucket" {
   bucket_prefix = var.name
@@ -32,6 +33,22 @@ resource "aws_s3_bucket_public_access_block" "kb_bucket_pab" {
 # Access logging bucket
 resource "aws_s3_bucket" "access_logs" {
   bucket_prefix = "${var.name}-access-logs"
+}
+
+# Lifecycle configuration for access logs
+resource "aws_s3_bucket_lifecycle_configuration" "access_logs_lifecycle" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    id     = "access_logs_lifecycle"
+    status = "Enabled"
+
+    filter {}
+    
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
 }
 
 resource "aws_s3_bucket_versioning" "access_logs_versioning" {
@@ -77,6 +94,11 @@ resource "aws_s3_bucket_lifecycle_configuration" "kb_bucket_lifecycle" {
     status = "Enabled"
 
     filter {}
+    
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+    
     transition {
       days          = 30
       storage_class = "STANDARD_IA"

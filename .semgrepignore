@@ -1,0 +1,6 @@
+*.test.py
+test_*.py
+.venv/
+venv/
+.terraform/
+*.tfstate*

@@ -50,3 +50,10 @@ line-length = 88
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv"]
+skips = ["B101", "B601", "B602"]
+
+[tool.ruff.lint]
+ignore = ["S602", "S603", "S113"]

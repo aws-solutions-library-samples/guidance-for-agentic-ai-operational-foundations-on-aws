@@ -48,6 +48,7 @@ resource "aws_iam_policy" "ecr_permissions" {
         Action = [
           "ecr:GetAuthorizationToken"
         ]
+        # tfsec:ignore:aws-iam-no-policy-wildcards - Required for ECR access
         # This action does not accept any restrictions on the resource, per the docs:
         # https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonelasticcontainerregistry.html
         Resource = "*"
@@ -114,6 +115,7 @@ resource "aws_iam_policy" "monitoring_permissions" {
         ]
       },
       {
+        # tfsec:ignore:aws-iam-no-policy-wildcards - Required for CloudWatch metrics
         # WILDCARD JUSTIFICATION: CloudWatch PutMetricData requires Resource="*" 
         # as per AWS documentation. Condition restricts to bedrock-agentcore namespace only.
         # Reference: https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricData.html
